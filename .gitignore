@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+crates/lindirstat/assets/scanner-*
+.env
+.DS_Store
+Thumbs.db

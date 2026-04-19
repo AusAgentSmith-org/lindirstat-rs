@@ -1,0 +1,15 @@
+[package]
+name = "lindirstat-scanner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "scanner"
+path = "src/main.rs"
+
+[dependencies]
+lindirstat-wire.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+jwalk = "0.8"

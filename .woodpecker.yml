@@ -1,0 +1,213 @@
+when:
+  - event: push
+    branch: main
+  - event: tag
+  - event: manual
+  - event: pull_request
+
+steps:
+  # ─── Quality checks ───────────────────────────────────────────────────────
+
+  - name: fmt
+    image: rust:1.88-bookworm
+    commands:
+      - rustup component add rustfmt
+      - cargo fmt --all -- --check
+
+  - name: check
+    image: rust:1.88-bookworm
+    commands:
+      - cargo check --workspace
+
+  - name: test
+    image: rust:1.88-bookworm
+    commands:
+      - cargo test --workspace
+
+  - name: clippy
+    image: rust:1.88-bookworm
+    commands:
+      - rustup component add clippy
+      - cargo clippy --workspace -- -D warnings
+
+  # ─── Build (push to main + tags) ─────────────────────────────────────────
+
+  - name: build-windows
+    image: rust:1.88-bookworm
+    commands:
+      - apt-get update -qq && apt-get install -y --no-install-recommends clang llvm lld cmake perl
+      - cargo install cargo-xwin@0.18.6 --locked --index https://github.com/rust-lang/crates.io-index
+      - rustup target add x86_64-pc-windows-msvc
+      - if [ -n "$CI_COMMIT_TAG" ]; then export CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1; fi
+      - cargo xwin build --release --target x86_64-pc-windows-msvc -p lindirstat
+      - ls -lh target/x86_64-pc-windows-msvc/release/lindirstat.exe
+    when:
+      - event: push
+        branch: main
+      - event: tag
+      - event: manual
+
+  # ─── Scanner musl builds (tags only — for release artifacts) ─────────────
+
+  - name: build-scanner-x86_64
+    image: rust:1.88-bookworm
+    commands:
+      - apt-get update -qq && apt-get install -y --no-install-recommends musl-tools
+      - rustup target add x86_64-unknown-linux-musl
+      - cargo build --release --target x86_64-unknown-linux-musl -p lindirstat-scanner
+      - ls -lh target/x86_64-unknown-linux-musl/release/scanner
+    when:
+      - event: tag
+
+  - name: build-scanner-aarch64
+    image: rust:1.88-bookworm
+    commands:
+      - apt-get update -qq && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+      - curl -sSfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar xJ -C /usr/local
+      - ln -s /usr/local/zig-linux-x86_64-0.13.0/zig /usr/local/bin/zig
+      - cargo install cargo-zigbuild --locked --index https://github.com/rust-lang/crates.io-index
+      - rustup target add aarch64-unknown-linux-musl
+      - cargo zigbuild --release --target aarch64-unknown-linux-musl -p lindirstat-scanner
+      - ls -lh target/aarch64-unknown-linux-musl/release/scanner
+    when:
+      - event: tag
+
+  # ─── Package & release (tags only) ───────────────────────────────────────
+
+  - name: package
+    image: alpine:3.23
+    commands:
+      - |
+        TAG="$CI_COMMIT_TAG"
+        cp target/x86_64-pc-windows-msvc/release/lindirstat.exe "lindirstat-$TAG-windows-x86_64.exe"
+        cp target/x86_64-unknown-linux-musl/release/scanner "scanner-linux-x86_64"
+        cp target/aarch64-unknown-linux-musl/release/scanner "scanner-linux-aarch64"
+        sha256sum \
+          "lindirstat-$TAG-windows-x86_64.exe" \
+          "scanner-linux-x86_64" \
+          "scanner-linux-aarch64" \
+          > "SHA256SUMS-$TAG.txt"
+        cat "SHA256SUMS-$TAG.txt"
+    when:
+      - event: tag
+
+  - name: forgejo-release
+    image: alpine:3.23
+    when:
+      - event: tag
+    environment:
+      FORGEJO_TOKEN:
+        from_secret: git_auth_token
+    commands:
+      - apk add --no-cache curl jq
+      - |
+        set -e
+        TAG="$CI_COMMIT_TAG"
+        API="https://repo.indexarr.net/api/v1"
+        REPO="indexarr/lindirstat-rs"
+        echo "$TAG" | grep -qE '(alpha|beta|rc)' && PRERELEASE=true || PRERELEASE=false
+
+        EXISTING_ID=$(curl -s -H "Authorization: token $FORGEJO_TOKEN" \
+          "$API/repos/$REPO/releases/tags/$TAG" | jq -r '.id // empty')
+        [ -n "$EXISTING_ID" ] && curl -s -X DELETE -H "Authorization: token $FORGEJO_TOKEN" \
+          "$API/repos/$REPO/releases/$EXISTING_ID" || true
+
+        RELEASE_ID=$(curl -sf -X POST \
+          -H "Authorization: token $FORGEJO_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"tag_name\":\"$TAG\",\"name\":\"lindirstat $TAG\",\"draft\":false,\"prerelease\":$PRERELEASE}" \
+          "$API/repos/$REPO/releases" | jq -r '.id')
+        [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ] && { echo "ERROR: failed to create release"; exit 1; }
+        echo "Forgejo release $TAG created (id=$RELEASE_ID)"
+
+        for file in "lindirstat-$TAG-windows-x86_64.exe" "scanner-linux-x86_64" "scanner-linux-aarch64" "SHA256SUMS-$TAG.txt"; do
+          [ -f "$file" ] || continue
+          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -F "attachment=@$file" \
+            "$API/repos/$REPO/releases/$RELEASE_ID/assets" > /dev/null
+          echo "  uploaded $file"
+        done
+
+  - name: github-release
+    image: alpine:3.23
+    when:
+      - event: tag
+    environment:
+      GH_TOKEN:
+        from_secret: gh_release_token
+    commands:
+      - apk add --no-cache curl jq
+      - |
+        set -e
+        TAG="$CI_COMMIT_TAG"
+        REPO="AusAgentSmith-org/lindirstat-rs"
+        echo "$TAG" | grep -qE '(alpha|beta|rc)' && PRERELEASE=true || PRERELEASE=false
+
+        EXISTING_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          "https://api.github.com/repos/$REPO/releases/tags/$TAG" | jq -r '.id // empty')
+        if [ -n "$EXISTING_ID" ]; then
+          curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases/$EXISTING_ID"
+          curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/git/refs/tags/$TAG" || true
+        fi
+
+        RELEASE_ID=$(curl -sf -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"main\",\"name\":\"lindirstat $TAG\",\"draft\":false,\"prerelease\":$PRERELEASE}" \
+          "https://api.github.com/repos/$REPO/releases" | jq -r '.id')
+        [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ] && { echo "ERROR: failed to create release"; exit 1; }
+        echo "GitHub release $TAG created (id=$RELEASE_ID)"
+
+        for file in "lindirstat-$TAG-windows-x86_64.exe" "scanner-linux-x86_64" "scanner-linux-aarch64" "SHA256SUMS-$TAG.txt"; do
+          [ -f "$file" ] || continue
+          curl -sf -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$file" \
+            "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$file" > /dev/null
+          echo "  uploaded $file"
+        done
+
+  # ─── Discord notifications ────────────────────────────────────────────────
+
+  - name: discord-success
+    image: alpine/curl
+    environment:
+      DISCORD_WEBHOOK_URL:
+        from_secret: discord_webhook_url
+    commands:
+      - |
+        HASH=$(echo $CI_COMMIT_SHA | head -c 7)
+        curl -sf -H "Content-Type: application/json" -d "{
+          \"embeds\": [{
+            \"title\": \"Build Successful\",
+            \"description\": \"**${CI_REPO}** — [$HASH]($CI_REPO_URL/commit/$CI_COMMIT_SHA)\",
+            \"color\": 5025616,
+            \"footer\": {\"text\": \"$CI_REPO • $CI_COMMIT_AUTHOR\"},
+            \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+          }]
+        }" "$DISCORD_WEBHOOK_URL" || true
+    when:
+      - status: [success]
+
+  - name: discord-failure
+    image: alpine/curl
+    environment:
+      DISCORD_WEBHOOK_URL:
+        from_secret: discord_webhook_url
+    commands:
+      - |
+        HASH=$(echo $CI_COMMIT_SHA | head -c 7)
+        curl -sf -H "Content-Type: application/json" -d "{
+          \"embeds\": [{
+            \"title\": \"Build Failed\",
+            \"description\": \"**${CI_REPO}** — [$HASH]($CI_REPO_URL/commit/$CI_COMMIT_SHA)\",
+            \"color\": 15548997,
+            \"footer\": {\"text\": \"$CI_REPO • $CI_COMMIT_AUTHOR\"},
+            \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+          }]
+        }" "$DISCORD_WEBHOOK_URL" || true
+    when:
+      - status: [failure]
