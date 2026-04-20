@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     if args.wire_version {
-        println!("wire={} build={}", WIRE_VERSION, BUILD_HASH);
+        println!("wire={WIRE_VERSION} build={BUILD_HASH}");
         return Ok(());
     }
 
