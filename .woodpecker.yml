@@ -30,7 +30,7 @@ steps:
       - rustup component add clippy
       - cargo clippy --workspace -- -D warnings
 
-  # ─── Build (push to main + tags) ─────────────────────────────────────────
+  # ─── Build: Windows x86_64 (push to main + tags) ─────────────────────────
 
   - name: build-windows
     image: rust:1.88-bookworm
@@ -40,14 +40,32 @@ steps:
       - rustup target add x86_64-pc-windows-msvc
       - if [ -n "$CI_COMMIT_TAG" ]; then export CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1; fi
       - cargo xwin build --release --target x86_64-pc-windows-msvc -p lindirstat
-      - ls -lh target/x86_64-pc-windows-msvc/release/lindirstat.exe
+      - ls -lh target/x86_64-pc-windows-msvc/release/lindirstat.exe target/x86_64-pc-windows-msvc/release/lindirstat-cli.exe
     when:
       - event: push
         branch: main
       - event: tag
       - event: manual
 
-  # ─── Scanner musl builds (tags only — for release artifacts) ─────────────
+  # ─── Build: Linux x86_64 (push to main + tags) ───────────────────────────
+
+  - name: build-linux-x86_64
+    image: rust:1.88-bookworm
+    commands:
+      - >
+        apt-get update -qq && apt-get install -y --no-install-recommends
+        libx11-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+        libxkbcommon-dev libwayland-dev libwayland-bin pkg-config libssl-dev
+        libgl-dev libegl-dev
+      - cargo build --release --bin lindirstat --bin lindirstat-cli
+      - ls -lh target/release/lindirstat target/release/lindirstat-cli
+    when:
+      - event: push
+        branch: main
+      - event: tag
+      - event: manual
+
+  # ─── Build: Scanner musl x86_64 (tags only) ──────────────────────────────
 
   - name: build-scanner-x86_64
     image: rust:1.88-bookworm
@@ -58,6 +76,8 @@ steps:
       - ls -lh target/x86_64-unknown-linux-musl/release/scanner
     when:
       - event: tag
+
+  # ─── Build: Linux aarch64 GUI+CLI + Scanner musl (tags only) ─────────────
 
   - name: build-scanner-aarch64
     image: rust:1.88-bookworm
@@ -72,6 +92,26 @@ steps:
     when:
       - event: tag
 
+  - name: build-linux-aarch64
+    image: rust:1.88-bookworm
+    commands:
+      - dpkg --add-architecture arm64
+      - apt-get update -qq
+      - >
+        apt-get install -y --no-install-recommends
+        gcc-aarch64-linux-gnu pkg-config libwayland-bin
+        libx11-dev:arm64 libxcb-render0-dev:arm64 libxcb-shape0-dev:arm64
+        libxcb-xfixes0-dev:arm64 libxkbcommon-dev:arm64 libwayland-dev:arm64
+        libgl-dev:arm64 libegl-dev:arm64
+      - rustup target add aarch64-unknown-linux-gnu
+      - export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+      - export PKG_CONFIG_ALLOW_CROSS=1
+      - export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+      - cargo build --release --target aarch64-unknown-linux-gnu --bin lindirstat --bin lindirstat-cli
+      - ls -lh target/aarch64-unknown-linux-gnu/release/lindirstat target/aarch64-unknown-linux-gnu/release/lindirstat-cli
+    when:
+      - event: tag
+
   # ─── Package & release (tags only) ───────────────────────────────────────
 
   - name: package
@@ -79,11 +119,21 @@ steps:
     commands:
       - |
         TAG="$CI_COMMIT_TAG"
-        cp target/x86_64-pc-windows-msvc/release/lindirstat.exe "lindirstat-$TAG-windows-x86_64.exe"
-        cp target/x86_64-unknown-linux-musl/release/scanner "scanner-linux-x86_64"
-        cp target/aarch64-unknown-linux-musl/release/scanner "scanner-linux-aarch64"
+        cp target/release/lindirstat                                          "lindirstat-$TAG-linux-x86_64"
+        cp target/release/lindirstat-cli                                      "lindirstat-cli-$TAG-linux-x86_64"
+        cp target/aarch64-unknown-linux-gnu/release/lindirstat                "lindirstat-$TAG-linux-aarch64"
+        cp target/aarch64-unknown-linux-gnu/release/lindirstat-cli            "lindirstat-cli-$TAG-linux-aarch64"
+        cp target/x86_64-pc-windows-msvc/release/lindirstat.exe              "lindirstat-$TAG-windows-x86_64.exe"
+        cp target/x86_64-pc-windows-msvc/release/lindirstat-cli.exe          "lindirstat-cli-$TAG-windows-x86_64.exe"
+        cp target/x86_64-unknown-linux-musl/release/scanner                  "scanner-linux-x86_64"
+        cp target/aarch64-unknown-linux-musl/release/scanner                 "scanner-linux-aarch64"
         sha256sum \
+          "lindirstat-$TAG-linux-x86_64" \
+          "lindirstat-cli-$TAG-linux-x86_64" \
+          "lindirstat-$TAG-linux-aarch64" \
+          "lindirstat-cli-$TAG-linux-aarch64" \
           "lindirstat-$TAG-windows-x86_64.exe" \
+          "lindirstat-cli-$TAG-windows-x86_64.exe" \
           "scanner-linux-x86_64" \
           "scanner-linux-aarch64" \
           > "SHA256SUMS-$TAG.txt"
@@ -120,7 +170,16 @@ steps:
         [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ] && { echo "ERROR: failed to create release"; exit 1; }
         echo "Forgejo release $TAG created (id=$RELEASE_ID)"
 
-        for file in "lindirstat-$TAG-windows-x86_64.exe" "scanner-linux-x86_64" "scanner-linux-aarch64" "SHA256SUMS-$TAG.txt"; do
+        for file in \
+          "lindirstat-$TAG-linux-x86_64" \
+          "lindirstat-cli-$TAG-linux-x86_64" \
+          "lindirstat-$TAG-linux-aarch64" \
+          "lindirstat-cli-$TAG-linux-aarch64" \
+          "lindirstat-$TAG-windows-x86_64.exe" \
+          "lindirstat-cli-$TAG-windows-x86_64.exe" \
+          "scanner-linux-x86_64" \
+          "scanner-linux-aarch64" \
+          "SHA256SUMS-$TAG.txt"; do
           [ -f "$file" ] || continue
           curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
             -F "attachment=@$file" \
@@ -160,7 +219,16 @@ steps:
         [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ] && { echo "ERROR: failed to create release"; exit 1; }
         echo "GitHub release $TAG created (id=$RELEASE_ID)"
 
-        for file in "lindirstat-$TAG-windows-x86_64.exe" "scanner-linux-x86_64" "scanner-linux-aarch64" "SHA256SUMS-$TAG.txt"; do
+        for file in \
+          "lindirstat-$TAG-linux-x86_64" \
+          "lindirstat-cli-$TAG-linux-x86_64" \
+          "lindirstat-$TAG-linux-aarch64" \
+          "lindirstat-cli-$TAG-linux-aarch64" \
+          "lindirstat-$TAG-windows-x86_64.exe" \
+          "lindirstat-cli-$TAG-windows-x86_64.exe" \
+          "scanner-linux-x86_64" \
+          "scanner-linux-aarch64" \
+          "SHA256SUMS-$TAG.txt"; do
           [ -f "$file" ] || continue
           curl -sf -X POST \
             -H "Authorization: token $GH_TOKEN" \
