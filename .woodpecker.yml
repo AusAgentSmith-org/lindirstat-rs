@@ -99,12 +99,15 @@ steps:
       - apt-get update -qq
       - >
         apt-get install -y --no-install-recommends
-        gcc-aarch64-linux-gnu pkg-config libwayland-bin
+        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config libwayland-bin
+        libc6-dev:arm64
         libx11-dev:arm64 libxcb-render0-dev:arm64 libxcb-shape0-dev:arm64
         libxcb-xfixes0-dev:arm64 libxkbcommon-dev:arm64 libwayland-dev:arm64
         libgl-dev:arm64 libegl-dev:arm64
       - rustup target add aarch64-unknown-linux-gnu
       - export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+      - export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+      - export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
       - export PKG_CONFIG_ALLOW_CROSS=1
       - export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
       - cargo build --release --target aarch64-unknown-linux-gnu --bin lindirstat --bin lindirstat-cli
