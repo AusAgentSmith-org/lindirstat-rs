@@ -251,10 +251,13 @@ fn maybe_upload_password(
 /// Returns `Some(bytes)` when upload is needed (version mismatch or missing).
 /// Returns `None` when the remote already matches `LOCAL_BUILD`.
 fn pick_bytes_if_needed(output: &str) -> Result<Option<&'static [u8]>> {
-    let mut arch = "";
     let mut remote_build = "";
+    #[cfg(embed_scanner)]
+    let mut arch = "";
+
     for line in output.lines() {
         let line = line.trim();
+        #[cfg(embed_scanner)]
         if line == "x86_64" || line == "aarch64" {
             arch = line;
         }
@@ -269,8 +272,7 @@ fn pick_bytes_if_needed(output: &str) -> Result<Option<&'static [u8]>> {
 
     #[cfg(not(embed_scanner))]
     {
-        // No embedded binaries — skip upload, let the remote fail naturally.
-        return Ok(None);
+        Ok(None)
     }
 
     #[cfg(embed_scanner)]
