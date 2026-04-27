@@ -48,6 +48,9 @@ impl App {
         let mut done = false;
         loop {
             match h.rx.try_recv() {
+                Ok(Msg::Status(s)) => {
+                    self.status = s;
+                }
                 Ok(Msg::Header { root }) => {
                     self.status = format!("scanning {root}…");
                 }
@@ -90,7 +93,7 @@ impl App {
         self.zoom.clear();
         self.cells.clear();
         self.hovered = None;
-        let result = match self.auth {
+        let handle = match self.auth {
             AuthMethod::SshKey => spawn_ssh(
                 ctx.clone(),
                 &self.host,
@@ -116,13 +119,8 @@ impl App {
                 )
             }
         };
-        match result {
-            Ok(h) => {
-                self.scan = Some(h);
-                self.status = "connecting…".into();
-            }
-            Err(e) => self.status = format!("failed: {e}"),
-        }
+        self.scan = Some(handle);
+        self.status = "connecting…".into();
     }
 }
 
