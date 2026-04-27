@@ -177,7 +177,9 @@ impl eframe::App for App {
                         .desired_width(220.0),
                 );
                 ui.checkbox(&mut self.sudo, "sudo");
-                ui.checkbox(&mut self.one_filesystem, "one FS");
+                ui.checkbox(&mut self.one_filesystem, "one FS")
+                    .on_hover_text("Don't cross mount points (recommended when scanning /)");
+
                 let can_scan = !self.host.is_empty()
                     && !self.remote_path.is_empty()
                     && self.scan.is_none()
