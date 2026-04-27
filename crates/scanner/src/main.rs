@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use jwalk::WalkDir;
+use jwalk::WalkDirGeneric;
 use lindirstat_wire::{
     write_frame, Entry, Frame, Header, Summary, KIND_DIR, KIND_FILE, KIND_OTHER, KIND_SYMLINK,
     MAGIC, WIRE_VERSION,
@@ -83,10 +83,36 @@ fn main() -> Result<()> {
     entries += 1;
 
     let mut next_id: u32 = 1;
-    // TODO: --one-filesystem is accepted but not yet enforced (jwalk 0.8 has
-    // no direct knob; needs a process_read_dir callback checking st_dev).
-    let _ = args.one_filesystem;
-    let walk = WalkDir::new(&root).skip_hidden(false).follow_links(false);
+
+    #[cfg(unix)]
+    let root_dev = {
+        use std::os::unix::fs::MetadataExt;
+        root_md.as_ref().map(|m| m.dev()).unwrap_or(0)
+    };
+
+    let one_fs = args.one_filesystem;
+    let walk = WalkDirGeneric::<((), ())>::new(&root)
+        .skip_hidden(false)
+        .follow_links(false)
+        .process_read_dir(move |_depth, _path, _state, children| {
+            #[cfg(unix)]
+            if one_fs {
+                use std::os::unix::fs::MetadataExt;
+                children.iter_mut().for_each(|entry_result| {
+                    if let Ok(entry) = entry_result {
+                        if entry.file_type.is_dir() {
+                            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                                if md.dev() != root_dev {
+                                    entry.read_children_path = None;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            #[cfg(not(unix))]
+            let _ = one_fs;
+        });
 
     for dent in walk {
         let dent = match dent {

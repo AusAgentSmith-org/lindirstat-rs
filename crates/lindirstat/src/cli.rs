@@ -25,6 +25,10 @@ struct Args {
     /// Run the scanner under sudo on the remote.
     #[arg(long)]
     sudo: bool,
+
+    /// Stay on one filesystem (don't cross mount points).
+    #[arg(long)]
+    one_filesystem: bool,
 }
 
 fn main() -> Result<()> {
@@ -40,17 +44,24 @@ fn main() -> Result<()> {
         .split_once(':')
         .context("target must be host:/path or -")?;
 
+    let one_fs_flag = if args.one_filesystem {
+        " --one-filesystem"
+    } else {
+        ""
+    };
     let remote_cmd = if args.sudo {
         format!(
-            "sudo {} {}",
+            "sudo {} {}{}",
             shell_escape(&args.scanner_path),
-            shell_escape(path)
+            shell_escape(path),
+            one_fs_flag,
         )
     } else {
         format!(
-            "{} {}",
+            "{} {}{}",
             shell_escape(&args.scanner_path),
-            shell_escape(path)
+            shell_escape(path),
+            one_fs_flag,
         )
     };
 

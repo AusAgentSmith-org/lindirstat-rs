@@ -32,8 +32,9 @@ pub fn spawn_ssh(
     remote_path: &str,
     scanner_path: &str,
     sudo: bool,
+    one_filesystem: bool,
 ) -> Result<ScanHandle> {
-    let cmd = build_cmd(scanner_path, remote_path, sudo);
+    let cmd = build_cmd(scanner_path, remote_path, sudo, one_filesystem);
     let mut child = Command::new("ssh")
         .arg(host)
         .arg(cmd)
@@ -56,6 +57,7 @@ pub fn spawn_password(
     remote_path: &str,
     scanner_path: &str,
     sudo: bool,
+    one_filesystem: bool,
 ) -> Result<ScanHandle> {
     let tcp = std::net::TcpStream::connect((auth.host, auth.port)).context("tcp connect")?;
     let mut sess = ssh2::Session::new().context("create session")?;
@@ -64,7 +66,7 @@ pub fn spawn_password(
     sess.userauth_password(auth.username, auth.password)
         .context("password auth")?;
 
-    let cmd = build_cmd(scanner_path, remote_path, sudo);
+    let cmd = build_cmd(scanner_path, remote_path, sudo, one_filesystem);
     let mut channel = sess.channel_session().context("open channel")?;
     channel.exec(&cmd).context("exec")?;
 
@@ -111,18 +113,25 @@ fn run_reader(ctx: egui::Context, reader: impl Read + Send + 'static) -> mpsc::R
     rx
 }
 
-fn build_cmd(scanner_path: &str, remote_path: &str, sudo: bool) -> String {
+fn build_cmd(scanner_path: &str, remote_path: &str, sudo: bool, one_filesystem: bool) -> String {
+    let one_fs_flag = if one_filesystem {
+        " --one-filesystem"
+    } else {
+        ""
+    };
     if sudo {
         format!(
-            "sudo {} {}",
+            "sudo {} {}{}",
             shell_escape(scanner_path),
-            shell_escape(remote_path)
+            shell_escape(remote_path),
+            one_fs_flag,
         )
     } else {
         format!(
-            "{} {}",
+            "{} {}{}",
             shell_escape(scanner_path),
-            shell_escape(remote_path)
+            shell_escape(remote_path),
+            one_fs_flag,
         )
     }
 }

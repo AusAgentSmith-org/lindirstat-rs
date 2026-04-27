@@ -31,6 +31,7 @@ struct App {
     port: String,
     remote_path: String,
     sudo: bool,
+    one_filesystem: bool,
 
     tree: Tree,
     scan: Option<ScanHandle>,
@@ -96,6 +97,7 @@ impl App {
                 &self.remote_path,
                 "~/.cache/lindirstat/scanner",
                 self.sudo,
+                self.one_filesystem,
             ),
             AuthMethod::Password => {
                 let port = self.port.parse::<u16>().unwrap_or(22);
@@ -110,6 +112,7 @@ impl App {
                     &self.remote_path,
                     "~/.cache/lindirstat/scanner",
                     self.sudo,
+                    self.one_filesystem,
                 )
             }
         };
@@ -174,6 +177,7 @@ impl eframe::App for App {
                         .desired_width(220.0),
                 );
                 ui.checkbox(&mut self.sudo, "sudo");
+                ui.checkbox(&mut self.one_filesystem, "one FS");
                 let can_scan = !self.host.is_empty()
                     && !self.remote_path.is_empty()
                     && self.scan.is_none()
