@@ -117,7 +117,7 @@ fn maybe_upload_ssh_key(
         if line == "x86_64" || line == "aarch64" {
             arch_found = line;
         }
-        if let Some(v) = line.strip_prefix("build=") {
+        if let Some(v) = line.split_whitespace().find_map(|t| t.strip_prefix("build=")) {
             build_found = v;
         }
     }
@@ -259,7 +259,7 @@ fn maybe_upload_password(
         if line == "x86_64" || line == "aarch64" {
             arch_found = line;
         }
-        if let Some(v) = line.strip_prefix("build=") {
+        if let Some(v) = line.split_whitespace().find_map(|t| t.strip_prefix("build=")) {
             build_found = v;
         }
     }
@@ -309,7 +309,7 @@ fn pick_bytes_if_needed(output: &str) -> Result<Option<&'static [u8]>> {
         if line == "x86_64" || line == "aarch64" {
             arch = line;
         }
-        if let Some(v) = line.strip_prefix("build=") {
+        if let Some(v) = line.split_whitespace().find_map(|t| t.strip_prefix("build=")) {
             remote_build = v;
         }
     }
