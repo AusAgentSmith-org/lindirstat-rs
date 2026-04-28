@@ -7,6 +7,7 @@ use std::thread;
 
 pub enum Msg {
     Status(String),
+    Log(String),
     Header { root: String },
     Batch(Vec<Entry>),
     Done(Summary),
@@ -71,9 +72,12 @@ fn ssh_key_thread(
     sudo: bool,
     one_filesystem: bool,
 ) -> Result<()> {
+    send_status(ctx, tx, "connecting…");
     maybe_upload_ssh_key(ctx, tx, host, scanner_path)?;
 
     let cmd = build_cmd(scanner_path, remote_path, sudo, one_filesystem);
+    send_status(ctx, tx, "starting scan…");
+    send_log(ctx, tx, &format!("exec: ssh {host} {cmd}"));
     let mut child = Command::new("ssh")
         .arg(host)
         .arg(&cmd)
@@ -81,6 +85,7 @@ fn ssh_key_thread(
         .stderr(Stdio::inherit())
         .spawn()
         .context("spawn ssh")?;
+    send_log(ctx, tx, "ssh spawned — reading frames…");
     let stdout = child.stdout.take().unwrap();
     pump_frames(ctx, tx, stdout);
     Ok(())
@@ -105,11 +110,30 @@ fn maybe_upload_ssh_key(
         .context("ssh version check")?;
     let output = String::from_utf8_lossy(&out.stdout);
 
+    let mut arch_found = "?";
+    let mut build_found = "?";
+    for line in output.lines() {
+        let line = line.trim();
+        if line == "x86_64" || line == "aarch64" {
+            arch_found = line;
+        }
+        if let Some(v) = line.strip_prefix("build=") {
+            build_found = v;
+        }
+    }
+    send_log(
+        ctx,
+        tx,
+        &format!("remote: arch={arch_found} build={build_found} local={LOCAL_BUILD}"),
+    );
+
     let Some(bytes) = pick_bytes_if_needed(&output)? else {
+        send_log(ctx, tx, "scanner up to date, skipping upload");
         return Ok(());
     };
 
     send_status(ctx, tx, "uploading scanner…");
+    send_log(ctx, tx, &format!("uploading {} bytes…", bytes.len()));
     let upload_cmd = format!(
         "mkdir -p $(dirname {0}) && cat > {0} && chmod +x {0}",
         shell_escape(scanner_path),
@@ -188,18 +212,23 @@ fn password_thread(
     send_status(ctx, tx, "connecting…");
 
     let tcp = std::net::TcpStream::connect((host, port)).context("tcp connect")?;
+    send_log(ctx, tx, &format!("tcp connected to {host}:{port}"));
     let mut sess = ssh2::Session::new().context("create session")?;
     sess.set_tcp_stream(tcp);
     sess.handshake().context("ssh handshake")?;
+    send_log(ctx, tx, "ssh handshake ok");
     sess.userauth_password(username, password)
         .context("password auth")?;
+    send_log(ctx, tx, &format!("authenticated as {username}"));
 
     maybe_upload_password(ctx, tx, &sess, scanner_path)?;
 
     send_status(ctx, tx, "starting scan…");
     let cmd = build_cmd(scanner_path, remote_path, sudo, one_filesystem);
+    send_log(ctx, tx, &format!("exec: {cmd}"));
     let mut channel = sess.channel_session().context("open channel")?;
     channel.exec(&cmd).context("exec")?;
+    send_log(ctx, tx, "exec ok — reading frames…");
     pump_frames(ctx, tx, channel);
     Ok(())
 }
@@ -223,11 +252,30 @@ fn maybe_upload_password(
         .context("version check read")?;
     ch.wait_close().ok();
 
+    let mut arch_found = "?";
+    let mut build_found = "?";
+    for line in output.lines() {
+        let line = line.trim();
+        if line == "x86_64" || line == "aarch64" {
+            arch_found = line;
+        }
+        if let Some(v) = line.strip_prefix("build=") {
+            build_found = v;
+        }
+    }
+    send_log(
+        ctx,
+        tx,
+        &format!("remote: arch={arch_found} build={build_found} local={LOCAL_BUILD}"),
+    );
+
     let Some(bytes) = pick_bytes_if_needed(&output)? else {
+        send_log(ctx, tx, "scanner up to date, skipping upload");
         return Ok(());
     };
 
     send_status(ctx, tx, "uploading scanner…");
+    send_log(ctx, tx, &format!("uploading {} bytes…", bytes.len()));
     let remote = std::path::Path::new(scanner_path);
     if let Some(parent) = remote.parent() {
         let mkdir = format!("mkdir -p {}", shell_escape(parent.to_str().unwrap_or("")));
@@ -288,6 +336,11 @@ fn pick_bytes_if_needed(output: &str) -> Result<Option<&'static [u8]>> {
 
 fn send_status(ctx: &egui::Context, tx: &mpsc::Sender<Msg>, s: &str) {
     let _ = tx.send(Msg::Status(s.to_owned()));
+    ctx.request_repaint();
+}
+
+fn send_log(ctx: &egui::Context, tx: &mpsc::Sender<Msg>, s: &str) {
+    let _ = tx.send(Msg::Log(s.to_owned()));
     ctx.request_repaint();
 }
 

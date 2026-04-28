@@ -2,6 +2,7 @@ use eframe::egui;
 use lindirstat::model::Tree;
 use lindirstat::scan::{spawn_password, spawn_ssh, Msg, PasswordAuth, ScanHandle};
 use lindirstat::treemap::{squarified, Cell};
+use std::time::Instant;
 
 #[derive(Default, PartialEq, Clone, Copy)]
 enum AuthMethod {
@@ -40,21 +41,56 @@ struct App {
     zoom: Vec<usize>,
     cells: Vec<Cell>,
     hovered: Option<usize>,
+
+    log_lines: Vec<String>,
+    scan_start: Option<Instant>,
 }
 
 impl App {
+    fn log_msg(&mut self, msg: String) {
+        let elapsed = self
+            .scan_start
+            .map(|t| format!("[{:.1}s] ", t.elapsed().as_secs_f32()))
+            .unwrap_or_default();
+        self.log_lines.push(format!("{elapsed}{msg}"));
+    }
+
     fn drain_scan(&mut self) {
-        let Some(h) = &self.scan else { return };
-        let mut done = false;
-        loop {
-            match h.rx.try_recv() {
-                Ok(Msg::Status(s)) => {
+        // Collect messages first so we can release the borrow on self.scan
+        // before calling self.log_msg() (which needs &mut self).
+        let (msgs, disconnected) = {
+            let Some(h) = &self.scan else { return };
+            let mut msgs = Vec::new();
+            let mut disconnected = false;
+            loop {
+                match h.rx.try_recv() {
+                    Ok(m) => msgs.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+            (msgs, disconnected)
+        };
+
+        let mut done = disconnected;
+        for msg in msgs {
+            match msg {
+                Msg::Status(s) => {
+                    self.log_msg(s.clone());
                     self.status = s;
                 }
-                Ok(Msg::Header { root }) => {
-                    self.status = format!("scanning {root}…");
+                Msg::Log(s) => {
+                    self.log_msg(s);
                 }
-                Ok(Msg::Batch(b)) => {
+                Msg::Header { root } => {
+                    let s = format!("scanning {root}…");
+                    self.log_msg(s.clone());
+                    self.status = s;
+                }
+                Msg::Batch(b) => {
                     self.tree.extend(b);
                     if self.zoom.is_empty() {
                         if let Some(r) = self.tree.root_idx() {
@@ -62,24 +98,23 @@ impl App {
                         }
                     }
                 }
-                Ok(Msg::Done(s)) => {
-                    self.status = format!(
+                Msg::Done(s) => {
+                    let msg = format!(
                         "done: {} entries, {}, {} errors, {}ms",
                         s.entries,
                         human(s.bytes),
                         s.errors,
                         s.elapsed_ms
                     );
+                    self.log_msg(msg.clone());
+                    self.status = msg;
                     done = true;
                 }
-                Ok(Msg::Error(e)) => {
-                    self.status = format!("error: {e}");
+                Msg::Error(e) => {
+                    let msg = format!("error: {e}");
+                    self.log_msg(msg.clone());
+                    self.status = msg;
                     done = true;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done = true;
-                    break;
                 }
             }
         }
@@ -93,6 +128,8 @@ impl App {
         self.zoom.clear();
         self.cells.clear();
         self.hovered = None;
+        self.log_lines.clear();
+        self.scan_start = Some(Instant::now());
         let handle = match self.auth {
             AuthMethod::SshKey => spawn_ssh(
                 ctx.clone(),
@@ -204,6 +241,39 @@ impl eframe::App for App {
                 }
             });
         });
+
+        egui::TopBottomPanel::bottom("log")
+            .min_height(80.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Debug Log").strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Clear").clicked() {
+                            self.log_lines.clear();
+                        }
+                    });
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_source("log_scroll")
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.log_lines {
+                            let color = if line.contains("error:") || line.contains("Error") {
+                                egui::Color32::from_rgb(255, 100, 100)
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            ui.label(
+                                egui::RichText::new(line)
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(color),
+                            );
+                        }
+                    });
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(&cur) = self.zoom.last() else {
